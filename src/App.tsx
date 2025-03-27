@@ -1,37 +1,37 @@
-import { useState } from 'react'
-import reactLogo from './assets/react.svg'
-import appLogo from '/favicon.svg'
-import PWABadge from './PWABadge.tsx'
-import './App.css'
+import appLogo from "/favicon.svg";
+import PWABadge from "./PWABadge.tsx";
+import SpotifyAuth from "./components/SpotifyAuth";
+import PlaylistSelector from "./components/PlaylistSelector";
+import RadioPlayer from "./components/RadioPlayer";
+import { useStore } from "./store/useStore";
+import "./App.css";
 
 function App() {
-  const [count, setCount] = useState(0)
+  const { spotifyApi, selectedPlaylist } = useStore();
 
   return (
-    <>
-      <div>
-        <a href="https://vite.dev" target="_blank">
-          <img src={appLogo} className="logo" alt="spotiguide logo" />
-        </a>
-        <a href="https://react.dev" target="_blank">
-          <img src={reactLogo} className="logo react" alt="React logo" />
-        </a>
+    <div className="container mx-auto px-4 py-8 max-w-4xl">
+      <div className="flex items-center justify-center mb-8">
+        <img src={appLogo} className="h-16 mr-4" alt="spotiguide logo" />
+        <h1 className="text-3xl font-bold">Spotiguide</h1>
       </div>
-      <h1>spotiguide</h1>
-      <div className="card">
-        <button onClick={() => setCount((count) => count + 1)}>
-          count is {count}
-        </button>
-        <p>
-          Edit <code>src/App.tsx</code> and save to test HMR
+
+      <div className="bg-white rounded-lg shadow-lg p-6 mb-8">
+        <SpotifyAuth />
+
+        {spotifyApi && !selectedPlaylist && <PlaylistSelector />}
+
+        {spotifyApi && selectedPlaylist && <RadioPlayer />}
+      </div>
+
+      <footer className="text-center text-gray-500 text-sm mt-8">
+        <PWABadge />
+        <p className="mt-2">
+          Mix your Spotify playlists with AI-generated speech
         </p>
-      </div>
-      <p className="read-the-docs">
-        Click on the Vite and React logos to learn more
-      </p>
-      <PWABadge />
-    </>
-  )
+      </footer>
+    </div>
+  );
 }
 
-export default App
+export default App;
