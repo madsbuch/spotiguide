@@ -30,6 +30,8 @@ export default function RadioPlayer() {
   const isMixingEnabled = true;
   // Track if handleSpeechEnded has been called to prevent double execution
   const speechEndedCalled = useRef(false);
+  // Track if event listeners are attached
+  const eventListenersAttached = useRef(false);
 
   // Handle when speech segment finishes playing - using useCallback to ensure consistent reference
   const handleSpeechEnded = useCallback(async () => {
@@ -132,11 +134,13 @@ export default function RadioPlayer() {
 
     audio.addEventListener("ended", onEnded);
     setAudioElement(audio);
+    eventListenersAttached.current = true;
 
     return () => {
       console.log("🧹 Cleaning up audio element");
       audio.removeEventListener("ended", onEnded);
       audio.pause();
+      eventListenersAttached.current = false;
     };
   }, [handleSpeechEnded]);
 
@@ -342,19 +346,24 @@ export default function RadioPlayer() {
 
     console.log("🔊 Speech segment changed, preparing to play speech");
 
+    // Remove any existing event listeners to prevent duplicates
+    if (eventListenersAttached.current) {
+      console.log(
+        "🧹 Removing existing event listeners before adding new ones"
+      );
+      const existingEndedHandler = audioElement.onended;
+      if (existingEndedHandler) {
+        audioElement.onended = null;
+      }
+    }
+
     const playSpeech = async () => {
       try {
         const trackId = currentSpeechSegment.id.replace("segment-", "");
         console.log("🔊 Playing speech for track:", trackId);
 
-        // Set up a timeout to handle API not responding
-        // The API is expected to take quite a while, so we use a longer timeout
-        const timeoutPromise = new Promise((_, reject) => {
-          setTimeout(() => reject(new Error("API request timed out")), 60000); // Increased to 60 seconds
-        });
-
         // Make the API request
-        const fetchPromise = fetch(
+        const response = await fetch(
           "https://n8n.lillefar.synology.me/webhook/spotiguide",
           {
             method: "POST",
@@ -364,12 +373,6 @@ export default function RadioPlayer() {
             body: JSON.stringify({ trackId }),
           }
         );
-
-        // Race the fetch against the timeout
-        const response = (await Promise.race([
-          fetchPromise,
-          timeoutPromise,
-        ])) as Response;
 
         if (!response.ok) {
           throw new Error(
@@ -399,54 +402,29 @@ export default function RadioPlayer() {
           handleSpeechEnded();
         };
 
+        // Use onended instead of addEventListener to ensure only one handler
+        audioElement.onended = () => {
+          console.log("🔊 Audio ended event fired from onended property");
+          handleSpeechEnded();
+        };
+
         const onCanPlayThrough = async () => {
           try {
+            // Remove the canplaythrough listener to prevent multiple calls
             audioElement.removeEventListener(
               "canplaythrough",
               onCanPlayThrough
             );
+
             await audioElement.play();
             console.log("🔊 Audio playback started successfully");
 
-            // Add a manual check to ensure the song starts after speech ends
-            // This is a fallback in case the 'ended' event doesn't fire properly
-            const checkEnded = () => {
-              if (audioElement && (audioElement.ended || audioElement.paused)) {
-                console.log(
-                  "🔊 Audio ended check - triggering handleSpeechEnded"
-                );
-                clearInterval(checkInterval);
-                handleSpeechEnded();
-              }
-            };
-
-            const checkInterval = setInterval(checkEnded, 1000);
-
-            // Also ensure we clear the interval when audio ends normally
-            const onEnded = () => {
-              console.log("🔊 Audio ended event fired from interval check");
-              clearInterval(checkInterval);
-              if (audioElement) {
-                audioElement.removeEventListener("ended", onEnded);
-              }
-            };
-
-            if (audioElement) {
-              audioElement.addEventListener("ended", onEnded);
-            }
-
-            // Return a cleanup function that includes clearing the interval
-            return () => {
-              clearInterval(checkInterval);
-              if (audioElement) {
-                audioElement.removeEventListener("ended", onEnded);
-              }
-            };
+            // We'll rely on the onended property instead of using setInterval
+            // This should prevent multiple calls to handleSpeechEnded
           } catch (playError) {
             console.error("❌ Error starting playback:", playError);
             setError("Failed to start audio playback.");
             handleSpeechEnded();
-            return undefined;
           }
         };
 
@@ -462,6 +440,8 @@ export default function RadioPlayer() {
               "canplaythrough",
               onCanPlayThrough
             );
+            // Clear the onended property
+            audioElement.onended = null;
             if (audioElement.src.startsWith("blob:")) {
               URL.revokeObjectURL(audioElement.src);
             }
@@ -497,8 +477,6 @@ export default function RadioPlayer() {
       }
     };
   }, [currentSpeechSegment, audioElement, handleSpeechEnded]);
-
-  // No toggle play/pause function needed anymore
 
   // Move to the next track in the playlist
   const handleNextTrack = async () => {
@@ -583,30 +561,30 @@ export default function RadioPlayer() {
   }
 
   return (
-    <div className="bg-gradient-to-b from-amber-900 to-amber-800 text-white rounded-xl shadow-xl p-6 max-w-md mx-auto border-4 border-amber-700">
+    <div className="bg-spotify-black text-white rounded-xl shadow-xl p-6 max-w-md mx-auto border-4 border-gray-800">
       {/* Radio Header */}
-      <div className="bg-amber-950 rounded-t-lg p-3 mb-4 border-b-2 border-amber-600">
-        <h2 className="text-xl font-bold text-center text-amber-300">
+      <div className="bg-gray-900 rounded-t-lg p-3 mb-4 border-b-2 border-gray-800">
+        <h2 className="text-xl font-bold text-center text-spotify-green">
           Spotiguide Radio
         </h2>
       </div>
 
       {/* Radio Display */}
       {currentTrack && (
-        <div className="bg-black/70 rounded-lg p-4 mb-4 border border-amber-600">
+        <div className="bg-black/70 rounded-lg p-4 mb-4 border border-gray-800">
           <div className="flex items-center gap-3">
             {currentTrack.albumImageUrl && (
               <img
                 src={currentTrack.albumImageUrl}
                 alt={currentTrack.name}
-                className="w-14 h-14 object-cover rounded border border-amber-600"
+                className="w-14 h-14 object-cover rounded border border-gray-700"
               />
             )}
             <div className="flex-1">
-              <h3 className="font-bold mb-1 truncate text-amber-300">
+              <h3 className="font-bold mb-1 truncate text-spotify-green">
                 {currentTrack.name}
               </h3>
-              <p className="text-amber-200/80 text-sm">
+              <p className="text-gray-300 text-sm">
                 {currentTrack.artists.join(", ")}
               </p>
             </div>
@@ -614,31 +592,13 @@ export default function RadioPlayer() {
 
           {/* DJ Announcement Indicator */}
           {currentSpeechSegment && (
-            <div className="bg-red-900/40 border border-red-700/50 rounded mt-3 p-2">
+            <div className="bg-gray-900 border border-gray-700 rounded mt-3 p-2">
               <div className="flex items-center">
-                <div className="w-3 h-3 bg-red-500 rounded-full mr-2 animate-pulse"></div>
-                <p className="text-red-300 text-sm">On Air</p>
+                <div className="w-3 h-3 bg-spotify-green rounded-full mr-2 animate-pulse"></div>
+                <p className="text-spotify-green text-sm">On Air</p>
               </div>
             </div>
           )}
-        </div>
-      )}
-
-      {/* Radio Status Indicator */}
-      {spotifyApi && currentTrack && accessToken && (
-        <div className="flex justify-center items-center mb-4">
-          <div className="bg-amber-950 rounded-lg p-3 border border-amber-700 text-center">
-            <div className="flex items-center justify-center gap-2">
-              <div
-                className={`w-3 h-3 rounded-full ${
-                  isPlaying ? "bg-green-500 animate-pulse" : "bg-red-500"
-                }`}
-              ></div>
-              <span className="text-amber-300 text-sm">
-                {isPlaying ? "Now Playing" : "Paused"}
-              </span>
-            </div>
-          </div>
         </div>
       )}
     </div>
