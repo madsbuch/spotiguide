@@ -1,150 +1,14 @@
-import { useEffect, useState, useRef, useCallback } from "react";
+import { useEffect, useState } from "react";
 import { useStore } from "../store/useStore";
-import { SpeechSegment } from "../store/types";
+import { SpeechSegment, Track } from "../store/types";
 
-export default function RadioPlayer() {
-  const {
-    spotifyApi,
-    selectedPlaylist,
-    isPlaying,
-    setIsPlaying,
-    currentTrack,
-    setCurrentTrack,
-  } = useStore();
-
+// Separate hook for Spotify Web Playback SDK
+function useSpotifyPlayer(accessToken: string) {
   const [player, setPlayer] = useState<Spotify.Player | null>(null);
   const [deviceId, setDeviceId] = useState<string>("");
   const [error, setError] = useState<string | null>(null);
-  const [accessToken, setAccessToken] = useState<string>("");
-  // We need volume for player initialization but don't need to change it
-  const volume = 50;
-  const progressInterval = useRef<number | null>(null);
-  const [audioElement, setAudioElement] = useState<HTMLAudioElement | null>(
-    null
-  );
-  const [isLoadingSpeech, setIsLoadingSpeech] = useState(false);
-  const [speechSegments, setSpeechSegments] = useState<SpeechSegment[]>([]);
-  const [currentSpeechSegment, setCurrentSpeechSegment] =
-    useState<SpeechSegment | null>(null);
-  // Always enable DJ mode, no toggle needed
-  const isMixingEnabled = true;
-  // Track if handleSpeechEnded has been called to prevent double execution
-  const speechEndedCalled = useRef(false);
-  // Track if event listeners are attached
-  const eventListenersAttached = useRef(false);
+  const { setIsPlaying } = useStore();
 
-  // Handle when speech segment finishes playing - using useCallback to ensure consistent reference
-  const handleSpeechEnded = useCallback(async () => {
-    console.log("🔊 handleSpeechEnded called");
-
-    // Prevent double execution
-    if (speechEndedCalled.current) {
-      console.log("🔊 handleSpeechEnded already called, skipping");
-      return;
-    }
-
-    if (!currentSpeechSegment) {
-      console.log("No current speech segment, returning");
-      return;
-    }
-
-    // Mark as called to prevent double execution
-    speechEndedCalled.current = true;
-
-    console.log("🔊 Speech segment ended, clearing and starting music");
-
-    // Clear the current speech segment
-    setCurrentSpeechSegment(null);
-
-    // Force start music playback after speech ends
-    if (currentTrack && spotifyApi && deviceId) {
-      try {
-        console.log(
-          "🎵 Attempting to start music playback for track:",
-          currentTrack.name
-        );
-
-        // Force start a new playback
-        await spotifyApi.player.startResumePlayback(deviceId, undefined, [
-          currentTrack.uri,
-        ]);
-
-        // Ensure playing state is updated
-        setIsPlaying(true);
-
-        console.log("🎵 Started playback after speech segment ended");
-      } catch (err) {
-        console.error("❌ Error starting playback after speech:", err);
-        setError("Failed to start music after speech introduction.");
-      } finally {
-        // Reset the flag after a delay to allow for future speech segments
-        setTimeout(() => {
-          speechEndedCalled.current = false;
-        }, 1000);
-      }
-    } else {
-      console.error("❌ Missing required data to start playback:", {
-        hasCurrentTrack: !!currentTrack,
-        hasSpotifyApi: !!spotifyApi,
-        hasDeviceId: !!deviceId,
-      });
-      // Reset the flag
-      speechEndedCalled.current = false;
-    }
-  }, [
-    currentSpeechSegment,
-    currentTrack,
-    spotifyApi,
-    deviceId,
-    setIsPlaying,
-    setError,
-  ]);
-
-  // Get the access token when spotifyApi changes
-  useEffect(() => {
-    const getToken = async () => {
-      if (!spotifyApi) return;
-
-      try {
-        // Get the access token
-        const token = await spotifyApi.getAccessToken();
-        if (token) {
-          setAccessToken(
-            typeof token === "string" ? token : token.access_token
-          );
-        }
-      } catch (err) {
-        console.error("Error getting access token:", err);
-      }
-    };
-
-    getToken();
-  }, [spotifyApi]);
-
-  // Initialize audio element for speech playback
-  useEffect(() => {
-    console.log("🔄 Initializing audio element");
-    const audio = new Audio();
-
-    // Add event listener for when audio ends
-    const onEnded = () => {
-      console.log("🔊 Audio ended event fired directly");
-      handleSpeechEnded();
-    };
-
-    audio.addEventListener("ended", onEnded);
-    setAudioElement(audio);
-    eventListenersAttached.current = true;
-
-    return () => {
-      console.log("🧹 Cleaning up audio element");
-      audio.removeEventListener("ended", onEnded);
-      audio.pause();
-      eventListenersAttached.current = false;
-    };
-  }, [handleSpeechEnded]);
-
-  // Initialize Spotify Web Playback SDK
   useEffect(() => {
     if (!accessToken) return;
 
@@ -156,63 +20,48 @@ export default function RadioPlayer() {
 
     // Initialize the player when the SDK is loaded
     window.onSpotifyWebPlaybackSDKReady = () => {
-      const player = new Spotify.Player({
+      const newPlayer = new Spotify.Player({
         name: "Spotiguide Radio Player",
-        getOAuthToken: (cb) => {
-          cb(accessToken);
-        },
-        volume: volume / 100,
+        getOAuthToken: (cb) => cb(accessToken),
+        volume: 0.5, // 50% volume
       });
 
       // Error handling
-      player.addListener("initialization_error", ({ message }) => {
-        console.error("Initialization error:", message);
-        setError(`Player initialization error: ${message}`);
-      });
+      const errorTypes = [
+        "initialization_error",
+        "authentication_error",
+        "account_error",
+        "playback_error",
+      ] as const;
 
-      player.addListener("authentication_error", ({ message }) => {
-        console.error("Authentication error:", message);
-        setError(`Authentication error: ${message}`);
-      });
-
-      player.addListener("account_error", ({ message }) => {
-        console.error("Account error:", message);
-        setError(`Account error: ${message}. Premium required.`);
-      });
-
-      player.addListener("playback_error", ({ message }) => {
-        console.error("Playback error:", message);
-        setError(`Playback error: ${message}`);
+      errorTypes.forEach((type) => {
+        newPlayer.addListener(type, ({ message }) => {
+          console.error(`${type}:`, message);
+          setError(`${type.split("_").join(" ")}: ${message}`);
+        });
       });
 
       // Playback status updates
-      player.addListener("player_state_changed", (state) => {
+      newPlayer.addListener("player_state_changed", (state) => {
         if (!state) return;
-
-        // Update playing state
         setIsPlaying(!state.paused);
-
-        // If the track ended, play the next one
-        if (state.position === 0 && state.duration > 0 && state.paused) {
-          handleNextTrack();
-        }
       });
 
       // Ready
-      player.addListener("ready", ({ device_id }) => {
+      newPlayer.addListener("ready", ({ device_id }) => {
         console.log("Ready with Device ID", device_id);
         setDeviceId(device_id);
       });
 
       // Not Ready
-      player.addListener("not_ready", ({ device_id }) => {
+      newPlayer.addListener("not_ready", ({ device_id }) => {
         console.log("Device ID has gone offline", device_id);
         setDeviceId("");
       });
 
       // Connect to the player
-      player.connect();
-      setPlayer(player);
+      newPlayer.connect();
+      setPlayer(newPlayer);
     };
 
     // Clean up
@@ -220,37 +69,105 @@ export default function RadioPlayer() {
       if (player) {
         player.disconnect();
       }
-      if (progressInterval.current) {
-        window.clearInterval(progressInterval.current);
-      }
       document.body.removeChild(script);
     };
-  }, [accessToken]);
+  }, [accessToken, setIsPlaying]);
 
-  // Fetch speech segments when a playlist is selected
+  return { player, deviceId, error };
+}
+
+// Separate hook for speech audio handling
+function useSpeechAudio(onSpeechEnded: () => void) {
+  const [audioElement] = useState<HTMLAudioElement>(() => new Audio());
+
   useEffect(() => {
-    if (!selectedPlaylist || !isMixingEnabled) return;
+    const handleEnded = () => {
+      console.log("🔊 Speech ended");
+      onSpeechEnded();
+    };
 
-    const fetchSpeechSegments = async () => {
+    audioElement.addEventListener("ended", handleEnded);
+
+    return () => {
+      audioElement.removeEventListener("ended", handleEnded);
+      audioElement.pause();
+      if (audioElement.src.startsWith("blob:")) {
+        URL.revokeObjectURL(audioElement.src);
+      }
+    };
+  }, [audioElement, onSpeechEnded]);
+
+  const playSpeechSegment = async (segment: SpeechSegment): Promise<void> => {
+    try {
+      const trackId = segment.id.replace("segment-", "");
+      console.log("🔊 Playing speech for track:", trackId);
+
+      // Make the API request
+      const response = await fetch(
+        "https://n8n.lillefar.synology.me/webhook/spotiguide",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ trackId }),
+        }
+      );
+
+      if (!response.ok) {
+        throw new Error(`Failed to fetch speech audio: ${response.statusText}`);
+      }
+
+      // Get the audio blob
+      const audioBlob = await response.blob();
+
+      if (audioBlob.size === 0) {
+        throw new Error("Received empty audio response");
+      }
+
+      // Create an object URL for the blob
+      const audioUrl = URL.createObjectURL(audioBlob);
+
+      // Clean up any previous blob URL
+      if (audioElement.src.startsWith("blob:")) {
+        URL.revokeObjectURL(audioElement.src);
+      }
+
+      // Set the audio source and play
+      audioElement.src = audioUrl;
+      await audioElement.play();
+
+      return;
+    } catch (err) {
+      console.error("❌ Error playing speech:", err);
+      throw err;
+    }
+  };
+
+  return { audioElement, playSpeechSegment };
+}
+
+// Separate hook for speech segment management
+function useSpeechSegments(selectedPlaylist: { tracks: Track[] } | null) {
+  const [isLoadingSpeech, setIsLoadingSpeech] = useState(false);
+  const [speechSegments, setSpeechSegments] = useState<SpeechSegment[]>([]);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!selectedPlaylist) return;
+
+    const createSpeechSegments = async () => {
       setIsLoadingSpeech(true);
       setError(null);
 
       try {
         // Create segments for each track in the playlist
-        const segments: SpeechSegment[] = [];
-
-        for (const track of selectedPlaylist.tracks) {
-          // Create a unique ID for this segment
-          const segmentId = `segment-${track.id}`;
-
-          // Create a speech segment for this track
-          segments.push({
-            id: segmentId,
+        const segments: SpeechSegment[] = selectedPlaylist.tracks.map(
+          (track: Track) => ({
+            id: `segment-${track.id}`,
             text: `Now playing ${track.name} by ${track.artists.join(", ")}`,
-            audioUrl: "https://n8n.lillefar.synology.me/webhook/spotiguide", // API endpoint URL
+            audioUrl: "https://n8n.lillefar.synology.me/webhook/spotiguide",
             duration: 5, // Estimated duration in seconds
-          });
-        }
+          })
+        );
 
         setSpeechSegments(segments);
       } catch (err) {
@@ -261,46 +178,157 @@ export default function RadioPlayer() {
       }
     };
 
-    fetchSpeechSegments();
-  }, [selectedPlaylist, isMixingEnabled]);
+    createSpeechSegments();
+  }, [selectedPlaylist]);
 
-  // Start playback when a playlist is selected and device is ready
+  return { speechSegments, isLoadingSpeech, error };
+}
+
+// Main RadioPlayer component
+export default function RadioPlayer() {
+  const {
+    spotifyApi,
+    selectedPlaylist,
+    isPlaying,
+    setIsPlaying,
+    currentTrack,
+    setCurrentTrack,
+    setCurrentSpeechSegment,
+    currentSpeechSegment,
+  } = useStore();
+
+  const [accessToken, setAccessToken] = useState<string>("");
+  const [playerError, setPlayerError] = useState<string | null>(null);
+
+  // Get the access token when spotifyApi changes
+  useEffect(() => {
+    const getToken = async () => {
+      if (!spotifyApi) return;
+
+      try {
+        const token = await spotifyApi.getAccessToken();
+        if (token) {
+          setAccessToken(
+            typeof token === "string" ? token : token.access_token
+          );
+        }
+      } catch (err) {
+        console.error("Error getting access token:", err);
+        setPlayerError("Failed to get access token");
+      }
+    };
+
+    getToken();
+  }, [spotifyApi]);
+
+  // Initialize Spotify player
+  const {
+    player,
+    deviceId,
+    error: spotifyPlayerError,
+  } = useSpotifyPlayer(accessToken);
+
+  // Handle speech ended event
+  const handleSpeechEnded = async () => {
+    if (!currentSpeechSegment || !currentTrack || !spotifyApi || !deviceId)
+      return;
+
+    setCurrentSpeechSegment(null);
+
+    try {
+      await spotifyApi.player.startResumePlayback(deviceId, undefined, [
+        currentTrack.uri,
+      ]);
+      setIsPlaying(true);
+    } catch (err) {
+      console.error("❌ Error starting playback after speech:", err);
+      setPlayerError("Failed to start music after speech introduction.");
+    }
+  };
+
+  // Initialize speech audio
+  const { playSpeechSegment } = useSpeechAudio(handleSpeechEnded);
+
+  // Get speech segments for the playlist
+  const {
+    speechSegments,
+    isLoadingSpeech,
+    error: speechError,
+  } = useSpeechSegments(selectedPlaylist);
+
+  // Play speech segment when it changes
+  useEffect(() => {
+    if (!currentSpeechSegment) return;
+
+    playSpeechSegment(currentSpeechSegment).catch((err) => {
+      console.error("Failed to play speech segment:", err);
+      setPlayerError(`Failed to play speech: ${err.message}`);
+      // Move on to the music if speech fails
+      handleSpeechEnded();
+    });
+  }, [currentSpeechSegment, handleSpeechEnded]);
+
+  // Start with the first track when a playlist is selected
+  useEffect(() => {
+    if (
+      selectedPlaylist?.tracks &&
+      selectedPlaylist?.tracks?.length > 0 &&
+      !currentTrack
+    ) {
+      const firstTrack = selectedPlaylist.tracks[0];
+      setCurrentTrack(firstTrack);
+
+      // Find the corresponding speech segment for this track
+      const speechSegment = speechSegments.find(
+        (segment) => segment.id === `segment-${firstTrack.id}`
+      );
+
+      if (speechSegment) {
+        setCurrentSpeechSegment(speechSegment);
+      }
+    }
+  }, [
+    selectedPlaylist,
+    speechSegments,
+    currentTrack,
+    setCurrentTrack,
+    setCurrentSpeechSegment,
+  ]);
+
+  // Start playback when a track is selected and device is ready
   useEffect(() => {
     if (!deviceId || !selectedPlaylist || !currentTrack || !spotifyApi) return;
 
     // If we're currently playing a speech segment, don't start music playback
     if (currentSpeechSegment) return;
 
-    // If mixing is enabled, always play the speech segment first when a new track is selected
-    if (isMixingEnabled) {
-      const trackSpeechSegment = speechSegments.find(
-        (segment) => segment.id === `segment-${currentTrack.id}`
-      );
+    // Find the corresponding speech segment for this track
+    const trackSpeechSegment = speechSegments.find(
+      (segment) => segment.id === `segment-${currentTrack.id}`
+    );
 
-      // If there's a speech segment for this track, play it first
-      if (trackSpeechSegment) {
-        // Set the current speech segment to play the introduction
-        setCurrentSpeechSegment(trackSpeechSegment);
-        return;
-      }
+    // If there's a speech segment for this track and we're not playing, play it
+    if (trackSpeechSegment && !isPlaying) {
+      setCurrentSpeechSegment(trackSpeechSegment);
+      return;
     }
 
-    const startPlayback = async () => {
-      try {
-        // Start playback of the current track
-        await spotifyApi.player.startResumePlayback(deviceId, undefined, [
-          currentTrack.uri,
-        ]);
-        setIsPlaying(true);
-      } catch (err) {
-        console.error("Error starting playback:", err);
-        setError(
-          "Failed to start playback. Make sure you have Spotify Premium."
-        );
-      }
-    };
-
+    // Otherwise start music playback if not already playing
     if (!isPlaying) {
+      const startPlayback = async () => {
+        try {
+          await spotifyApi.player.startResumePlayback(deviceId, undefined, [
+            currentTrack.uri,
+          ]);
+          setIsPlaying(true);
+        } catch (err) {
+          console.error("Error starting playback:", err);
+          setPlayerError(
+            "Failed to start playback. Make sure you have Spotify Premium."
+          );
+        }
+      };
+
       startPlayback();
     }
   }, [
@@ -308,238 +336,83 @@ export default function RadioPlayer() {
     currentTrack,
     selectedPlaylist,
     spotifyApi,
+    isPlaying,
     currentSpeechSegment,
-    isMixingEnabled,
     speechSegments,
+    setCurrentSpeechSegment,
+    setIsPlaying,
   ]);
 
-  // Start with the first track when a playlist is selected
-  useEffect(() => {
-    if (
-      selectedPlaylist &&
-      selectedPlaylist.tracks.length > 0 &&
-      !currentTrack
-    ) {
-      console.log("Setting initial track from playlist");
-      setCurrentTrack(selectedPlaylist.tracks[0]);
+  // Type guard function to check if playlist has tracks
+  function hasValidTracks(playlist: any): playlist is { tracks: Track[] } {
+    return (
+      playlist && Array.isArray(playlist.tracks) && playlist.tracks.length > 0
+    );
+  }
 
-      // If mixing is enabled, also set the first speech segment
-      if (isMixingEnabled && speechSegments.length > 0) {
-        const firstTrackId = selectedPlaylist.tracks[0].id;
-        const speechSegment = speechSegments.find(
-          (segment) => segment.id === `segment-${firstTrackId}`
-        );
-
-        if (speechSegment) {
-          setCurrentSpeechSegment(speechSegment);
-        }
-      }
-    }
-  }, [selectedPlaylist, speechSegments, isMixingEnabled]);
-
-  // Play speech segment when it changes
-  useEffect(() => {
-    if (!audioElement || !currentSpeechSegment) return;
-
-    // Reset the speech ended flag when a new speech segment starts
-    speechEndedCalled.current = false;
-
-    console.log("🔊 Speech segment changed, preparing to play speech");
-
-    // Remove any existing event listeners to prevent duplicates
-    if (eventListenersAttached.current) {
-      console.log(
-        "🧹 Removing existing event listeners before adding new ones"
-      );
-      const existingEndedHandler = audioElement.onended;
-      if (existingEndedHandler) {
-        audioElement.onended = null;
-      }
-    }
-
-    const playSpeech = async () => {
-      try {
-        const trackId = currentSpeechSegment.id.replace("segment-", "");
-        console.log("🔊 Playing speech for track:", trackId);
-
-        // Make the API request
-        const response = await fetch(
-          "https://n8n.lillefar.synology.me/webhook/spotiguide",
-          {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({ trackId }),
-          }
-        );
-
-        if (!response.ok) {
-          throw new Error(
-            `Failed to fetch speech audio: ${response.statusText}`
-          );
-        }
-
-        // Get the audio blob
-        const audioBlob = await response.blob();
-        console.log("🔊 Received audio blob:", audioBlob.type, audioBlob.size);
-
-        if (audioBlob.size === 0) {
-          throw new Error("Received empty audio response");
-        }
-
-        // Create an object URL for the blob
-        const audioUrl = URL.createObjectURL(audioBlob);
-
-        // Set the audio source
-        audioElement.src = audioUrl;
-
-        // Set up event listeners
-        const onError = (e: Event) => {
-          console.error("❌ Audio playback error:", e);
-          setError("Failed to play audio. Format may not be supported.");
-          URL.revokeObjectURL(audioUrl);
-          handleSpeechEnded();
-        };
-
-        // Use onended instead of addEventListener to ensure only one handler
-        audioElement.onended = () => {
-          console.log("🔊 Audio ended event fired from onended property");
-          handleSpeechEnded();
-        };
-
-        const onCanPlayThrough = async () => {
-          try {
-            // Remove the canplaythrough listener to prevent multiple calls
-            audioElement.removeEventListener(
-              "canplaythrough",
-              onCanPlayThrough
-            );
-
-            await audioElement.play();
-            console.log("🔊 Audio playback started successfully");
-
-            // We'll rely on the onended property instead of using setInterval
-            // This should prevent multiple calls to handleSpeechEnded
-          } catch (playError) {
-            console.error("❌ Error starting playback:", playError);
-            setError("Failed to start audio playback.");
-            handleSpeechEnded();
-          }
-        };
-
-        // Add event listeners
-        audioElement.addEventListener("error", onError);
-        audioElement.addEventListener("canplaythrough", onCanPlayThrough);
-
-        // Clean up function
-        return () => {
-          if (audioElement) {
-            audioElement.removeEventListener("error", onError);
-            audioElement.removeEventListener(
-              "canplaythrough",
-              onCanPlayThrough
-            );
-            // Clear the onended property
-            audioElement.onended = null;
-            if (audioElement.src.startsWith("blob:")) {
-              URL.revokeObjectURL(audioElement.src);
-            }
-          }
-        };
-      } catch (err) {
-        console.error("❌ Error playing speech:", err);
-        setError(
-          `Failed to play speech segment: ${
-            err instanceof Error ? err.message : "Unknown error"
-          }`
-        );
-        handleSpeechEnded(); // Move to next segment/track
-        return undefined;
-      }
-    };
-
-    // Execute the playSpeech function and store any cleanup function it returns
-    let cleanupFn: (() => void) | undefined;
-    playSpeech()
-      .then((fn) => {
-        cleanupFn = fn;
-      })
-      .catch((err) => {
-        console.error("❌ Error in playSpeech promise:", err);
-      });
-
-    // Clean up function
-    return () => {
-      if (cleanupFn) cleanupFn();
-      if (audioElement && audioElement.src.startsWith("blob:")) {
-        URL.revokeObjectURL(audioElement.src);
-      }
-    };
-  }, [currentSpeechSegment, audioElement, handleSpeechEnded]);
-
-  // Move to the next track in the playlist
+  // Handle track navigation
   const handleNextTrack = async () => {
-    if (!selectedPlaylist || !currentTrack || !spotifyApi || !deviceId) return;
+    if (!currentTrack || !selectedPlaylist) return;
 
-    const currentIndex = selectedPlaylist.tracks.findIndex(
+    // Use type guard to ensure we have valid tracks
+    if (!hasValidTracks(selectedPlaylist)) return;
+
+    const tracks = selectedPlaylist.tracks;
+    const currentIndex = tracks.findIndex(
       (track) => track.id === currentTrack.id
     );
 
-    if (currentIndex < selectedPlaylist.tracks.length - 1) {
-      // Move to the next track
-      const nextTrack = selectedPlaylist.tracks[currentIndex + 1];
-      setCurrentTrack(nextTrack);
+    // Get next track (or loop back to first)
+    const nextTrack =
+      currentIndex < tracks.length - 1 ? tracks[currentIndex + 1] : tracks[0];
 
-      // If mixing is enabled, play a speech segment first
-      if (isMixingEnabled) {
-        // Find the corresponding speech segment for this track
-        const speechSegment = speechSegments.find(
-          (segment) => segment.id === `segment-${nextTrack.id}`
-        );
+    setCurrentTrack(nextTrack);
 
-        if (speechSegment) {
-          setCurrentSpeechSegment(speechSegment);
-          return; // Don't start playback yet, wait for speech to finish
-        }
-      }
+    // Find speech segment for the next track
+    const speechSegment = speechSegments.find(
+      (segment) => segment.id === `segment-${nextTrack.id}`
+    );
 
-      // Start playback of the next track if no speech or mixing disabled
+    if (speechSegment) {
+      setCurrentSpeechSegment(speechSegment);
+    } else if (spotifyApi && deviceId) {
+      // If no speech segment, start music directly
       try {
         await spotifyApi.player.startResumePlayback(deviceId, undefined, [
           nextTrack.uri,
         ]);
+        setIsPlaying(true);
       } catch (err) {
         console.error("Error playing next track:", err);
-      }
-    } else {
-      // End of playlist, loop back to the first track
-      const firstTrack = selectedPlaylist.tracks[0];
-      setCurrentTrack(firstTrack);
-
-      // If mixing is enabled, play a speech segment first
-      if (isMixingEnabled) {
-        // Find the corresponding speech segment for this track
-        const speechSegment = speechSegments.find(
-          (segment) => segment.id === `segment-${firstTrack.id}`
-        );
-
-        if (speechSegment) {
-          setCurrentSpeechSegment(speechSegment);
-          return; // Don't start playback yet, wait for speech to finish
-        }
-      }
-
-      try {
-        await spotifyApi.player.startResumePlayback(deviceId, undefined, [
-          firstTrack.uri,
-        ]);
-      } catch (err) {
-        console.error("Error looping playlist:", err);
+        setPlayerError("Failed to play next track");
       }
     }
   };
 
+  // Listen for track ended events
+  useEffect(() => {
+    if (!spotifyApi || !deviceId || !player) return;
+
+    const checkTrackEnded = (
+      state: {
+        position: number;
+        duration: number;
+        paused: boolean;
+      } | null
+    ) => {
+      if (state && state.position === 0 && state.duration > 0 && state.paused) {
+        handleNextTrack();
+      }
+    };
+
+    player.addListener("player_state_changed", checkTrackEnded);
+
+    return () => {
+      player.removeListener("player_state_changed", checkTrackEnded);
+    };
+  }, [spotifyApi, deviceId, player, handleNextTrack]);
+
+  // Determine what to render
   if (!spotifyApi || !selectedPlaylist) {
     return null;
   }
@@ -552,6 +425,7 @@ export default function RadioPlayer() {
     );
   }
 
+  const error = playerError || spotifyPlayerError || speechError;
   if (error) {
     return (
       <div className="p-4 text-center bg-red-500/10 text-red-500 border border-red-500/30 rounded-lg">
