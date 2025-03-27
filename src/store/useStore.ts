@@ -27,6 +27,6 @@ export const useStore = create<StoreState>((set) => ({
   setIsMixingEnabled: (enabled) => set({ isMixingEnabled: enabled }),
 
   // Default backend URL - this should be updated based on your actual backend
-  backendUrl: "http://localhost:3000",
+  backendUrl: "https://n8n.lillefar.synology.me",
   setBackendUrl: (url) => set({ backendUrl: url }),
 }));

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { SpotifyApi } from "@spotify/web-api-ts-sdk";
 import { useStore } from "../store/useStore";
+import { createMockSpotifyApi } from "../mocks/mockSpotifyApi";
 
 const SPOTIFY_CLIENT_ID = import.meta.env.VITE_SPOTIFY_CLIENT_ID;
 const REDIRECT_URI = import.meta.env.VITE_REDIRECT_URI;
@@ -19,10 +20,27 @@ export default function SpotifyAuth() {
   const [isLoading, setIsLoading] = useState(true);
   const [authError, setAuthError] = useState<string | null>(null);
   const [isRedirecting, setIsRedirecting] = useState(false);
+  const [useMockApi, setUseMockApi] = useState(false);
   const { setSpotifyApi, spotifyApi } = useStore();
 
   useEffect(() => {
+    // Check if we should use the mock API (for demo purposes)
+    const urlParams = new URLSearchParams(window.location.search);
+    const mockParam = urlParams.get("mock");
+    if (mockParam === "true") {
+      setUseMockApi(true);
+    }
+
     const initializeSpotify = async () => {
+      // If using mock API, initialize with mock data
+      if (useMockApi) {
+        console.log("Using mock Spotify API");
+        const mockApi = createMockSpotifyApi();
+        setSpotifyApi(mockApi);
+        setIsLoading(false);
+        return;
+      }
+
       try {
         console.log("Initializing Spotify SDK...");
 
@@ -160,15 +178,27 @@ export default function SpotifyAuth() {
           </div>
         )}
 
-        <button
-          onClick={handleLogin}
-          disabled={isRedirecting}
-          className={`bg-green-500 hover:bg-green-600 text-white font-bold py-2 px-4 rounded flex items-center gap-2 ${
-            isRedirecting ? "opacity-50 cursor-not-allowed" : ""
-          }`}
-        >
-          {isRedirecting ? "Redirecting..." : "Login with Spotify"}
-        </button>
+        <div className="flex flex-col gap-4 w-full max-w-xs">
+          <button
+            onClick={handleLogin}
+            disabled={isRedirecting}
+            className={`bg-green-500 hover:bg-green-600 text-white font-bold py-2 px-4 rounded flex items-center justify-center gap-2 ${
+              isRedirecting ? "opacity-50 cursor-not-allowed" : ""
+            }`}
+          >
+            {isRedirecting ? "Redirecting..." : "Login with Spotify"}
+          </button>
+
+          <button
+            onClick={() => {
+              const mockApi = createMockSpotifyApi();
+              setSpotifyApi(mockApi);
+            }}
+            className="bg-blue-500 hover:bg-blue-600 text-white font-bold py-2 px-4 rounded flex items-center justify-center gap-2"
+          >
+            Use Spotify Pro Demo
+          </button>
+        </div>
       </div>
     );
   }
