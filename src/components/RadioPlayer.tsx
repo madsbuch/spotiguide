@@ -6,8 +6,6 @@ import {
   FaBackward,
   FaPlay,
   FaPause,
-  FaVolumeUp,
-  FaVolumeMute,
   FaMicrophone,
   FaMicrophoneSlash,
 } from "react-icons/fa";
@@ -26,9 +24,8 @@ export default function RadioPlayer() {
   const [deviceId, setDeviceId] = useState<string>("");
   const [error, setError] = useState<string | null>(null);
   const [accessToken, setAccessToken] = useState<string>("");
-  const [volume, setVolume] = useState<number>(50);
-  const [trackProgress, setTrackProgress] = useState<number>(0);
-  const [trackDuration, setTrackDuration] = useState<number>(0);
+  // We need volume for player initialization but don't need to change it
+  const volume = 50;
   const progressInterval = useRef<number | null>(null);
   const [audioElement, setAudioElement] = useState<HTMLAudioElement | null>(
     null
@@ -117,9 +114,7 @@ export default function RadioPlayer() {
       player.addListener("player_state_changed", (state) => {
         if (!state) return;
 
-        // Update track progress
-        setTrackProgress(state.position);
-        setTrackDuration(state.duration);
+        // We don't need to track duration anymore
 
         // Update playing state
         setIsPlaying(!state.paused);
@@ -225,18 +220,7 @@ export default function RadioPlayer() {
         ]);
         setIsPlaying(true);
 
-        // Set up progress tracking
-        if (progressInterval.current) {
-          window.clearInterval(progressInterval.current);
-        }
-        progressInterval.current = window.setInterval(() => {
-          setTrackProgress((prev) => {
-            if (isPlaying && prev < trackDuration) {
-              return prev + 1000; // Update every second
-            }
-            return prev;
-          });
-        }, 1000);
+        // We don't need progress tracking anymore
       } catch (err) {
         console.error("Error starting playback:", err);
         setError(
@@ -286,11 +270,8 @@ export default function RadioPlayer() {
   useEffect(() => {
     if (!audioElement || !currentSpeechSegment) return;
 
-    // Pause Spotify playback when speech is playing
-    if (isPlaying && player) {
-      player.pause();
-      setIsPlaying(false);
-    }
+    // We no longer pause Spotify playback when speech is playing
+    // This allows music to continue playing during speech
 
     const playSpeech = async () => {
       try {
@@ -357,10 +338,44 @@ export default function RadioPlayer() {
             );
             await audioElement.play();
             console.log("Audio playback started successfully");
+
+            // Add a manual check to ensure the song starts after speech ends
+            // This is a fallback in case the 'ended' event doesn't fire properly
+            const checkEnded = () => {
+              if (audioElement && (audioElement.ended || audioElement.paused)) {
+                console.log("Audio ended check - triggering handleSpeechEnded");
+                clearInterval(checkInterval);
+                handleSpeechEnded();
+              }
+            };
+
+            const checkInterval = setInterval(checkEnded, 1000);
+
+            // Also ensure we clear the interval when audio ends normally
+            const onEnded = () => {
+              console.log("Audio ended event fired");
+              clearInterval(checkInterval);
+              if (audioElement) {
+                audioElement.removeEventListener("ended", onEnded);
+              }
+            };
+
+            if (audioElement) {
+              audioElement.addEventListener("ended", onEnded);
+            }
+
+            // Return a cleanup function that includes clearing the interval
+            return () => {
+              clearInterval(checkInterval);
+              if (audioElement) {
+                audioElement.removeEventListener("ended", onEnded);
+              }
+            };
           } catch (playError) {
             console.error("Error starting playback:", playError);
             setError("Failed to start audio playback.");
             handleSpeechEnded();
+            return undefined;
           }
         };
 
@@ -370,10 +385,15 @@ export default function RadioPlayer() {
 
         // Clean up function
         return () => {
-          audioElement.removeEventListener("error", onError);
-          audioElement.removeEventListener("canplaythrough", onCanPlayThrough);
-          if (audioElement.src.startsWith("blob:")) {
-            URL.revokeObjectURL(audioElement.src);
+          if (audioElement) {
+            audioElement.removeEventListener("error", onError);
+            audioElement.removeEventListener(
+              "canplaythrough",
+              onCanPlayThrough
+            );
+            if (audioElement.src.startsWith("blob:")) {
+              URL.revokeObjectURL(audioElement.src);
+            }
           }
         };
       } catch (err) {
@@ -409,15 +429,24 @@ export default function RadioPlayer() {
 
   // Handle when speech segment finishes playing
   const handleSpeechEnded = async () => {
-    if (!currentSpeechSegment) return;
+    console.log("handleSpeechEnded called");
+    if (!currentSpeechSegment) {
+      console.log("No current speech segment, returning");
+      return;
+    }
 
     // Clear the current speech segment
     setCurrentSpeechSegment(null);
 
-    // Start music playback
-    if (currentTrack && spotifyApi && deviceId) {
+    // If music isn't already playing, start it
+    if (!isPlaying && currentTrack && spotifyApi && deviceId) {
       try {
-        // Start a new playback instead of resuming
+        console.log(
+          "Attempting to start music playback for track:",
+          currentTrack.name
+        );
+
+        // Start a new playback
         await spotifyApi.player.startResumePlayback(deviceId, undefined, [
           currentTrack.uri,
         ]);
@@ -428,6 +457,12 @@ export default function RadioPlayer() {
         console.error("Error starting playback after speech:", err);
         setError("Failed to start music after speech introduction.");
       }
+    } else {
+      console.error("Missing required data to start playback:", {
+        hasCurrentTrack: !!currentTrack,
+        hasSpotifyApi: !!spotifyApi,
+        hasDeviceId: !!deviceId,
+      });
     }
   };
 
@@ -575,22 +610,7 @@ export default function RadioPlayer() {
     }
   };
 
-  // Change volume
-  const handleVolumeChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const newVolume = parseInt(e.target.value);
-    setVolume(newVolume);
-    if (player) {
-      player.setVolume(newVolume / 100);
-    }
-  };
-
-  // Format time (milliseconds to mm:ss)
-  const formatTime = (ms: number) => {
-    const seconds = Math.floor(ms / 1000);
-    const minutes = Math.floor(seconds / 60);
-    const remainingSeconds = seconds % 60;
-    return `${minutes}:${remainingSeconds.toString().padStart(2, "0")}`;
-  };
+  // We don't need these functions anymore as we've simplified the UI
 
   if (!spotifyApi || !selectedPlaylist) {
     return null;
@@ -613,76 +633,45 @@ export default function RadioPlayer() {
   }
 
   return (
-    <div className="bg-gradient-to-br from-gray-800 to-gray-900 text-white rounded-xl shadow-2xl p-6 max-w-2xl mx-auto relative overflow-hidden">
-      {/* Background animation */}
-      <div className="absolute -top-1/2 -left-1/2 w-[200%] h-[200%] bg-[radial-gradient(circle,rgba(29,185,84,0.05)_0%,transparent_50%)] animate-[spin_15s_linear_infinite] z-0 pointer-events-none"></div>
-
+    <div className="bg-gray-800 text-white rounded-xl shadow-xl p-6 max-w-md mx-auto">
       {/* Content */}
-      <div className="relative z-10">
-        <h2 className="text-2xl font-bold mb-6 text-center bg-gradient-to-r from-green-400 to-blue-500 bg-clip-text text-transparent pb-3 border-b border-white/10 tracking-wide">
+      <div>
+        <h2 className="text-xl font-bold mb-4 text-center border-b border-white/10 pb-2">
           Spotify Radio
         </h2>
 
         {currentTrack && (
           <div>
-            <div className="flex items-center gap-6 mb-6">
+            <div className="flex items-center gap-4 mb-4">
               {currentTrack.albumImageUrl && (
-                <div className="relative group rounded-lg overflow-hidden shadow-lg transition-all duration-300 hover:scale-105 hover:rotate-2 hover:shadow-xl">
-                  <img
-                    src={currentTrack.albumImageUrl}
-                    alt={currentTrack.name}
-                    className="w-24 h-24 object-cover rounded-lg"
-                  />
-                  <div className="absolute inset-0 bg-gradient-to-br from-green-400/30 to-blue-500/30 opacity-0 group-hover:opacity-100 transition-opacity duration-300"></div>
-                </div>
+                <img
+                  src={currentTrack.albumImageUrl}
+                  alt={currentTrack.name}
+                  className="w-16 h-16 object-cover rounded-lg"
+                />
               )}
               <div className="flex-1">
-                <h3 className="text-xl font-bold mb-1 truncate">
-                  {currentTrack.name}
-                </h3>
-                <p className="text-gray-300">
+                <h3 className="font-bold mb-1 truncate">{currentTrack.name}</h3>
+                <p className="text-gray-300 text-sm">
                   {currentTrack.artists.join(", ")}
                 </p>
               </div>
             </div>
 
             {currentSpeechSegment && (
-              <div className="bg-blue-900/20 border border-blue-700/30 rounded-lg p-4 mb-6 relative overflow-hidden">
-                <div className="absolute top-0 left-0 w-1 h-full bg-gradient-to-b from-blue-500 to-purple-500"></div>
-                <div className="flex items-center mb-2">
+              <div className="bg-blue-900/20 border border-blue-700/30 rounded-lg p-3 mb-4">
+                <div className="flex items-center mb-1">
                   <div className="w-2 h-2 bg-blue-400 rounded-full mr-2 animate-pulse"></div>
-                  <p className="text-blue-300 font-medium">
-                    Currently playing speech
-                  </p>
+                  <p className="text-blue-300 text-sm">Radio DJ Announcement</p>
                 </div>
-                <p className="text-gray-200 italic">
-                  {currentSpeechSegment.text}
-                </p>
               </div>
             )}
 
             {spotifyApi && currentTrack && accessToken && (
               <div className="mt-4">
-                <div className="mb-4 p-4 bg-gray-800/50 rounded-lg border border-gray-700">
-                  {/* Progress bar */}
-                  <div className="flex justify-between text-xs text-gray-400 mb-1">
-                    <span>{formatTime(trackProgress)}</span>
-                    <span>{formatTime(trackDuration)}</span>
-                  </div>
-                  <div className="w-full h-1.5 bg-gray-700 rounded-full mb-3 overflow-hidden">
-                    <div
-                      className="h-full bg-gradient-to-r from-green-500 to-green-400 rounded-full"
-                      style={{
-                        width:
-                          trackDuration > 0
-                            ? `${(trackProgress / trackDuration) * 100}%`
-                            : "0%",
-                      }}
-                    ></div>
-                  </div>
-
-                  {/* Controls */}
-                  <div className="flex justify-between items-center">
+                <div className="p-3 bg-gray-700 rounded-lg">
+                  {/* Controls - simplified */}
+                  <div className="flex justify-center items-center gap-8">
                     <button
                       onClick={handlePreviousTrack}
                       className="text-white hover:text-green-400 transition-colors p-2"
@@ -706,49 +695,25 @@ export default function RadioPlayer() {
                   </div>
                 </div>
 
-                {/* Volume control */}
-                <div className="flex items-center gap-3 mt-4 p-3 bg-gray-800/30 rounded-lg">
-                  <button
-                    onClick={() => (volume > 0 ? setVolume(0) : setVolume(50))}
-                    className="text-white hover:text-green-400 transition-colors"
-                  >
-                    {volume === 0 ? <FaVolumeMute /> : <FaVolumeUp />}
-                  </button>
-                  <input
-                    type="range"
-                    min="0"
-                    max="100"
-                    value={volume}
-                    onChange={handleVolumeChange}
-                    className="w-full h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer"
-                  />
-                  <span className="text-xs text-gray-400 w-8 text-right">
-                    {volume}%
-                  </span>
-                </div>
-
-                {/* Mixing toggle */}
-                <div className="mt-6">
+                {/* Mixing toggle - simplified */}
+                <div className="mt-4">
                   <button
                     onClick={() => setIsMixingEnabled(!isMixingEnabled)}
-                    className={`w-full flex items-center justify-center gap-2 px-4 py-3 rounded-lg font-medium transition-all duration-200 hover:-translate-y-1 hover:shadow-lg relative overflow-hidden mb-4 ${
+                    className={`w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-sm ${
                       isMixingEnabled
-                        ? "bg-green-600 text-white shadow-green-600/30"
+                        ? "bg-green-600 text-white"
                         : "bg-gray-700 text-gray-300"
                     }`}
                   >
-                    <span className="absolute inset-0 bg-gradient-to-r from-transparent via-white/20 to-transparent -translate-x-full hover:translate-x-full transition-transform duration-500"></span>
-                    <span className="relative z-10 flex items-center gap-2">
-                      {isMixingEnabled ? (
-                        <>
-                          <FaMicrophone /> Radio DJ Mode Enabled
-                        </>
-                      ) : (
-                        <>
-                          <FaMicrophoneSlash /> Radio DJ Mode Disabled
-                        </>
-                      )}
-                    </span>
+                    {isMixingEnabled ? (
+                      <>
+                        <FaMicrophone /> Radio DJ Mode
+                      </>
+                    ) : (
+                      <>
+                        <FaMicrophoneSlash /> DJ Mode Off
+                      </>
+                    )}
                   </button>
                 </div>
               </div>
